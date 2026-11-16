@@ -46,6 +46,7 @@ test('frontend WebSocket lifetime and explicit close cancel all pending reconnec
   const originalWebSocket = globalThis.WebSocket
   const originalSetTimeout = globalThis.setTimeout
   const originalClearTimeout = globalThis.clearTimeout
+  const originalDateNow = Date.now
 
   globalThis.window = {
     location: {
@@ -125,6 +126,25 @@ test('frontend WebSocket lifetime and explicit close cancel all pending reconnec
     unlimitedSocket.reconnect()
     assert.equal(FakeWebSocket.instances.length, 4)
     assert.equal(timers.length, timerCount)
+
+    // Adopt a configured lifetime on this same open connection. The limit
+    // starts at its original open time, not when the main application adopts it.
+    let now = 100000
+    Date.now = () => now
+    FakeWebSocket.instances.at(-1).emit('open')
+    now += 2000
+    unlimitedSocket.setTimeoutMinutes(1)
+    assert.equal(FakeWebSocket.instances.length, 4)
+    assert.equal(timers.at(-1).delay, 58000)
+    const firstPolicy = timers.at(-1)
+    unlimitedSocket.setTimeoutMinutes(0)
+    assert.equal(firstPolicy.cleared, true)
+    now += 1000
+    unlimitedSocket.setTimeoutMinutes(1)
+    assert.equal(timers.at(-1).delay, 57000)
+    timers.at(-1).callback()
+    assert.equal(FakeWebSocket.instances.length, 4, 'adoption and expiry never create another connection')
+    assert.equal(unlimitedSocket.isConnected, false)
   } finally {
     liveSocket?.close()
     unlimitedSocket?.close()
@@ -133,6 +153,7 @@ test('frontend WebSocket lifetime and explicit close cancel all pending reconnec
     globalThis.WebSocket = originalWebSocket
     globalThis.setTimeout = originalSetTimeout
     globalThis.clearTimeout = originalClearTimeout
+    Date.now = originalDateNow
     await vite.close()
   }
 })

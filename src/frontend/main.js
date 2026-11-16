@@ -307,7 +307,13 @@ async function initApp() {
   const routePath = (currentHash.replace(/^#/, '') || '/').split('?')[0]
   const startupReads = takeStartupReads()
   let startupServers = startupReads?.servers || null
-  let startupLive = null
+  let startupLive = startupReads?.live || null
+  const restartChangedStartup = () => {
+    if (!startupLive || startupLive.isCurrent) return false
+    startupLive.close()
+    window.location.reload()
+    return true
+  }
   if (!isAdmin && routePath === '/') {
     void loadDashboard().catch(() => { /* The router handles a failed navigation import. */ })
     if (!isMultipleMode && localStorage.getItem(STORAGE.JWT_TOKEN)) {
@@ -317,7 +323,7 @@ async function initApp() {
         autoRedirect: false, updateSession: false, includeTurnstileToken: false,
         timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
       }).catch(() => null)
-      startupLive = createStartupLiveSocket()
+      startupLive ||= createStartupLiveSocket()
     }
   }
 
@@ -368,6 +374,7 @@ async function initApp() {
     config = await fetchConfig(startupReads?.config)
   }
 
+  if (restartChangedStartup()) return
   applyDefaultTheme(config?.preferred_theme)
   await applyDefaultLanguage(config?.default_language)
   applyStartupThemeOptions(config)
@@ -392,10 +399,10 @@ async function initApp() {
     ? config.site_configs[versionApiIndex]
     : config
 
+  if (restartChangedStartup()) return
   const app = createApp(App)
-  // An early connection has no configured lifetime yet. Recreate it normally
-  // when a site has a non-zero lifetime limit, or startup access was denied.
-  if ((!config.is_public && !config.authorization) || config.frontend_ws_timeout_minutes > 0) {
+  // The accepted dashboard applies its lifetime policy to the same connection.
+  if (!config.is_public && !config.authorization) {
     startupLive?.close()
     startupLive = null
   }

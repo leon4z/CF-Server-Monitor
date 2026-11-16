@@ -52,7 +52,8 @@ Maintained branch: `personal`. `main` is an upstream baseline, currently
    never a client-supplied allowlist, and remain restricted on resubscription.
    Existing sessions may establish this connection during config loading, but
    messages stay buffered until startup access is accepted and inventory arrives.
-   Denied startup and configured lifetime limits close/recreate early connections.
+   Denied startup closes early connections; configured lifetime limits are
+   applied to the same connection from its original open time on adoption.
 7. Latest bootstrap state survives Durable Object hibernation in its existing
    storage: one IP-masked sample per host, five-minute validity and a 64 KiB cap.
    Writes are serialized and timestamp ordered; failures preserve normal report
@@ -76,6 +77,14 @@ cannot install a developer certificate as a side effect of running tests.
    lookup is shared only within that logical settings read; existing cache
    lifetimes, permission checks, defaults and save behavior stay unchanged.
    There is no schema migration, persistent cache or settings backfill.
+10. The inline entry also starts the existing realtime transport for signed-in
+    single-site homepages. Transport code is shared without importing Vue;
+    `api.js` keeps its existing exports. Main startup adopts that one controller
+    instead of opening another socket, and messages remain buffered until access
+    and inventory are accepted. Changed startup identities/routes, denied access
+    and unclaimed controllers close the connection (15-second adoption bound).
+    Later lifetime configuration uses the existing socket and open timestamp.
+    Server handshake, authentication, DO snapshots and metric ordering stay intact.
 
 ## Verification
 

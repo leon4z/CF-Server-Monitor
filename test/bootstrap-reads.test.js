@@ -16,25 +16,27 @@ test('inline reads reuse HTTP semantics, exclude one-time challenges and discard
   try {
     const { startStartupReads, takeStartupReads } = await vite.ssrLoadModule('/src/frontend/utils/startupReads.js')
     const { applySessionResult } = await vite.ssrLoadModule('/src/frontend/utils/http.js')
-    startStartupReads(); startStartupReads()
+    const liveControllers=[]
+    const start=()=>startStartupReads([],()=>{const live={closed:0,close(){this.closed++}};liveControllers.push(live);return live})
+    start(); start()
     assert.equal(calls.length, 2, 'one config and one inventory request, before app startup')
     window.location.hash='#/' // The hash router normalizes an initially empty hash.
     const early = takeStartupReads(); assert.ok(early); assert.equal(takeStartupReads(),null)
     assert.equal((await early.config).status,200); await early.servers
     assert.ok(calls.every(c => c.options.headers.Authorization==='Bearer synthetic-session' && !c.options.headers['X-Turnstile-Token']))
     for (const denied of [401,403]) {
-      status=denied; const original=[...store]; startStartupReads(); const result=await takeStartupReads().config
+      status=denied; const original=[...store]; start(); const result=await takeStartupReads().config
       assert.deepEqual([...store],original,'early failures cannot clear a session or verified challenge')
       if (denied===401) { applySessionResult(result); assert.equal(store.has('jwt_token'),false); store.set('jwt_token','synthetic-session') }
     }
     status=200; store.set('turnstile_token','once'); const before=calls.length
-    startStartupReads(); const fresh=takeStartupReads(); assert.equal(fresh.config,null); await fresh.servers
+    start(); const fresh=takeStartupReads(); assert.equal(fresh.config,null); await fresh.servers
     assert.equal(calls.length,before+1); assert.equal(store.get('turnstile_token'),'once')
-    startStartupReads(); store.set('jwt_token','changed-session'); assert.equal(takeStartupReads(),null)
-    store.delete('turnstile_token'); store.delete('jwt_token'); startStartupReads(); const anonymous=takeStartupReads()
+    start(); store.set('jwt_token','changed-session'); assert.equal(takeStartupReads(),null); assert.equal(liveControllers.at(-1).closed,1)
+    store.delete('turnstile_token'); store.delete('jwt_token'); start(); const anonymous=takeStartupReads()
     assert.ok(anonymous.config); assert.equal(anonymous.servers,null); await anonymous.config
-    window.location.pathname='/admin'; const count=calls.length; startStartupReads(); assert.equal(calls.length,count)
-    window.location.pathname='/'; window.__APP_API_BASES__=['https://a.example','https://b.example']; startStartupReads(); assert.equal(calls.length,count)
+    window.location.pathname='/admin'; const count=calls.length; start(); assert.equal(calls.length,count)
+    window.location.pathname='/'; window.__APP_API_BASES__=['https://a.example','https://b.example']; start(); assert.equal(calls.length,count)
   } finally { Object.assign(globalThis,saved); await vite.close() }
 })
 
