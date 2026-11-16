@@ -21,6 +21,26 @@ globalThis.CustomEvent = class {
 
 const i18n = await import('../src/frontend/utils/i18n.js')
 
+test('preloading a locale preserves the preference and the authoritative site language', async () => {
+  localStorage.store.clear()
+  i18n.currentLang.value = 'es'
+  let events = 0
+  const dispatch = window.dispatchEvent
+  window.dispatchEvent = () => { events++ }
+  try {
+    assert.equal(await i18n.preloadLanguage(), true)
+    assert.ok(i18n.translations.es)
+    assert.equal(i18n.getLanguage(), 'es')
+    assert.equal(localStorage.getItem(STORAGE.LANGUAGE_PREFERENCE), null)
+    assert.equal(events, 0)
+    assert.equal(await i18n.applyDefaultLanguage('zh'), 'zh')
+    assert.equal(i18n.getLanguage(), 'zh')
+    assert.equal(localStorage.getItem(STORAGE.LANGUAGE_PREFERENCE), null)
+  } finally {
+    window.dispatchEvent = dispatch
+  }
+})
+
 test('setLanguage loads a locale on demand and updates translations', async () => {
   assert.equal(await i18n.setLanguage('ja'), true)
   assert.equal(i18n.getLanguage(), 'ja')

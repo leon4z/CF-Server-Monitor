@@ -1,14 +1,14 @@
 import { createApp } from 'vue'
 import App from './App.vue'
-import router from './router'
+import router, { loadDashboard } from './router'
 import { ADMIN_ENTRY_URL, isAdminPath } from './router/adminEntryUrl'
 import './styles/main.css'
 import './styles/light.css'
 import { STORAGE } from './utils/constants'
-import { applyDefaultLanguage, currentLang, normalizeLanguagePreference, resolveLanguagePreference, translations } from './utils/i18n'
+import { applyDefaultLanguage, preloadLanguage, currentLang, normalizeLanguagePreference, resolveLanguagePreference, translations } from './utils/i18n'
 import { http, DEFAULT_REQUEST_TIMEOUT_MS } from './utils/http'
 import { initConfig, hasMultipleApiBases } from './utils/config'
-import { LAST_AGENT_VERSION, LAST_WORKERS_VERSION, VERSION, normalizeLiveSocketTimeoutMinutes } from './utils/api'
+import { LAST_AGENT_VERSION, LAST_WORKERS_VERSION, VERSION, fetchRemoteVersion, normalizeLiveSocketTimeoutMinutes } from './utils/api'
 import { resolveDisplayMode } from './utils/displayMode'
 import { getMikusAssetUrl, isMikusThemeEnabled, normalizeThemeOptions, setMikusThemeClass } from './utils/themeOptions'
 import { applyDefaultTheme } from './composables/useTheme'
@@ -298,6 +298,14 @@ async function initApp() {
   const currentHash = window.location.hash || ''
   const isAdmin = isAdminPath() || currentHash.startsWith('#admin') || currentHash.startsWith('#/admin')
 
+  // Start independent code downloads while the authoritative config is in flight.
+  // Importing the page does not mount it or request private server data.
+  void preloadLanguage()
+  const routePath = (currentHash.replace(/^#/, '') || '/').split('?')[0]
+  if (!isAdmin && routePath === '/') {
+    void loadDashboard().catch(() => { /* The router handles a failed navigation import. */ })
+  }
+
   // 多站模式公开页面：一次 getAll 获取所有站点配置，检查 Turnstile key 是否可共享。
   let config
   if (isMultipleMode && !isAdmin) {
@@ -362,10 +370,20 @@ async function initApp() {
     }
   }
 
+  const versionApiIndex = Array.isArray(config?.site_configs)
+    ? config.site_configs.findIndex(site => site)
+    : 0
+  const versionSite = Array.isArray(config?.site_configs)
+    ? config.site_configs[versionApiIndex]
+    : config
+
   const app = createApp(App)
   app.provide('appConfig', config || {})
   app.use(router)
   app.mount('#app').$nextTick(() => {
+    if (versionSite?.authorization === true) {
+      void fetchRemoteVersion(versionApiIndex).catch(() => { /* Optional update metadata. */ })
+    }
     if (!isAdmin && !config.is_public && !config.authorization) {
       window.location.replace(ADMIN_ENTRY_URL)
     }

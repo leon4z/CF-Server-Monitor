@@ -91,6 +91,9 @@ const loadLanguage = (code) => {
   return promise
 }
 
+// Warm the likely locale without applying a preference or emitting UI events.
+export const preloadLanguage = () => loadLanguage(currentLang.value)
+
 export const t = (key) => {
   return translations[currentLang.value]?.[key] || translations[DEFAULT_LANGUAGE]?.[key] || key
 }

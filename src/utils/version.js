@@ -9,6 +9,11 @@ let cachedRemoteVersionAt = 0;
 let cachedRemoteVersionFailureAt = 0;
 let remoteVersionPromise = null;
 
+// Reading the last known versions must never start a network request.
+export function getCachedRemoteVersion() {
+  return cachedRemoteVersion;
+}
+
 export async function getRemoteVersion() {
   const now = Date.now();
   if (cachedRemoteVersion && now - cachedRemoteVersionAt < REMOTE_VERSION_TTL) {

@@ -611,7 +611,7 @@ import BatchEditServersModal from './components/BatchEditServersModal.vue'
 import DeleteServerModal from './components/DeleteServerModal.vue'
 import CopyCommandModal from './components/CopyCommandModal.vue'
 import AutoDiscoveryCommandModal from './components/AutoDiscoveryCommandModal.vue'
-import { adminApi, login, logout as apiLogout, upgradeDatabase, clearHistory, fetchConfig } from '../../utils/api'
+import { adminApi, login, logout as apiLogout, upgradeDatabase, clearHistory, fetchRemoteVersion } from '../../utils/api'
 import { hasMultipleApiBases, getApiBases } from '../../utils/config.js'
 import { copyTextToClipboard } from '../../utils/clipboard.js'
 import { normalizeLanguagePreference, normalizeNotificationLanguagePreference, t, useTranslation } from '../../utils/i18n'
@@ -627,45 +627,6 @@ const trans = useTranslation()
 const route = useRoute()
 const router = useRouter()
 const appConfig = inject('appConfig', {})
-let startupConfigConsumed = false
-const AGENT_RELEASE_URL = 'https://api.github.com/repos/huilang-me/cfsm-agent/releases/latest'
-const AGENT_RELEASE_FAILURE_TTL = 30 * 1000
-
-let cachedAgentReleaseVersion = ''
-let cachedAgentReleaseFailureAt = 0
-let agentReleasePromise = null
-
-const normalizeVersion = (version) => String(version || '').trim()
-
-const fetchLatestAgentReleaseVersion = async () => {
-  if (cachedAgentReleaseVersion) return cachedAgentReleaseVersion
-  if (cachedAgentReleaseFailureAt && Date.now() - cachedAgentReleaseFailureAt < AGENT_RELEASE_FAILURE_TTL) return ''
-  if (agentReleasePromise) return agentReleasePromise
-
-  agentReleasePromise = fetch(AGENT_RELEASE_URL, {
-    headers: { Accept: 'application/vnd.github+json' }
-  }).then(async (res) => {
-    if (!res.ok) throw new Error(`GitHub release request failed: ${res.status}`)
-    const release = await res.json()
-    const version = normalizeVersion(release?.tag_name)
-    if (version) {
-      cachedAgentReleaseVersion = version
-      cachedAgentReleaseFailureAt = 0
-    } else {
-      cachedAgentReleaseFailureAt = Date.now()
-    }
-    return version
-  }).catch((e) => {
-    cachedAgentReleaseFailureAt = Date.now()
-    console.error('[ERROR] Load latest agent release failed:', e)
-    return ''
-  }).finally(() => {
-    agentReleasePromise = null
-  })
-
-  return agentReleasePromise
-}
-
 const getMessage = (msg) => {
   if (typeof msg === 'string') {
     const translated = t(msg)
@@ -1283,10 +1244,10 @@ const handleLogin = async () => {
     syncApiIndexQuery()
     clearTurnstile()
     turnstileVerified.value = hasSharedTurnstileVerified()
+    void loadLatestAgentVersion()
     await Promise.all([
       loadSettings(),
-      loadServers(),
-      loadLatestAgentVersion()
+      loadServers()
     ])
   } else {
     loginError.value = result.status === 403 ? 'Please complete the verification' : trans.value.errorInvalidUsername
@@ -1324,10 +1285,10 @@ const initAdmin = async () => {
     if (savedTurnstileToken) {
       turnstileToken.value = savedTurnstileToken
     }
+    void loadLatestAgentVersion()
     await Promise.all([
       loadSettings(),
-      loadServers(),
-      loadLatestAgentVersion()
+      loadServers()
     ])
   } else {
     await loadTurnstileConfig()
@@ -1362,10 +1323,10 @@ const switchAdminSite = async () => {
   resetAdminContext()
   adminSiteLoading.value = true
   try {
+    void loadLatestAgentVersion()
     await Promise.all([
       loadSettings(),
-      loadServers(),
-      loadLatestAgentVersion()
+      loadServers()
     ])
   } finally {
     adminSiteLoading.value = false
@@ -1377,23 +1338,16 @@ const handleAdminApiIndexChange = async () => {
   await switchAdminSite()
 }
 
-const getStartupConfigForCurrentSite = () => {
-  if (startupConfigConsumed) return null
-  if (selectedApiIndex.value !== 0) return null
-  if (!appConfig || typeof appConfig !== 'object' || Object.keys(appConfig).length === 0) return null
-  startupConfigConsumed = true
-  return appConfig
-}
-
 const loadLatestAgentVersion = async () => {
+  const apiIndex = selectedApiIndex.value
+  latestAgentVersion.value = ''
   try {
-    const startupConfig = getStartupConfigForCurrentSite()
-    const config = startupConfig || await fetchConfig(selectedApiIndex.value)
-    const configVersion = normalizeVersion(config?.last_agent_version)
-    latestAgentVersion.value = configVersion || await fetchLatestAgentReleaseVersion()
+    const versions = await fetchRemoteVersion(apiIndex)
+    if (selectedApiIndex.value === apiIndex && isLoggedIn.value) {
+      latestAgentVersion.value = String(versions?.last_agent_version || '').trim()
+    }
   } catch (e) {
     console.error('[ERROR] Load latest agent version failed:', e)
-    latestAgentVersion.value = await fetchLatestAgentReleaseVersion()
   }
 }
 
@@ -1730,10 +1684,8 @@ const refreshServersCache = async () => {
 }
 
 const refreshServers = async () => {
-  await Promise.all([
-    loadServers(),
-    loadLatestAgentVersion()
-  ])
+  void loadLatestAgentVersion()
+  await loadServers()
 }
 
 const addServer = async () => {

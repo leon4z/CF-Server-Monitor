@@ -587,14 +587,24 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 | `default_language`   | string       | 默认语言：`auto` 按浏览器语言自动选择中文或英文 / `zh` 中文 / `en` 英文 |
 | `verified`           | boolean      | 当前 Turnstile 验证状态；有效的验证凭证或本次成功验证的 Token 均可使其为 `true` |
 | `turnstile_verified` | string\|null | 当次验证成功后回写给客户端的"已验证凭证"，客户端应回存并在 1 小时内复用 |
-| `last_workers_version` | string\|null | **仅登录时出现**；远程最新 Workers 版本，来源为 GitHub `version.json`，后端缓存 5 分钟 |
-| `last_agent_version` | string\|null | **仅登录时出现**；远程最新 Agent 版本，来源为 GitHub `version.json`，后端缓存 5 分钟 |
+| `last_workers_version` | string\|null | **仅登录时出现**；远程最新 Workers 版本，来源为 GitHub `version.json`，仅返回内存中的最近已知值；启动时不查询 GitHub |
+| `last_agent_version` | string\|null | **仅登录时出现**；远程最新 Agent 版本，来源为 GitHub Releases，仅返回内存中的最近已知值；启动时不查询 GitHub |
 | `theme_options`      | object       | 第三方主题自定义配置；未配置时为空对象，匿名请求也会返回 |
 | `frontend_ws_timeout_minutes` | number | 前端实时订阅连接超时分钟数，范围 `0`-`1440`；默认 `0` 表示不超时 |
 | `long_history_points` | number      | 长历史查询返回的采样点数，后台可选 `60`、`120`、`180`、`240` |
 | `latency_window` | object      | `/api/servers` 的 `servers[].ping` / `servers[].loss` 窗口参数；`points` 为最多真实点数，`hours` 为回看小时数 |
 
 > ~~`X-Turnstile-Token` 携带且验证成功时，响应头会同步设置 `X-Turnstile-Verified`。~~ **2026-07-26 修订**：当前前端从响应体的 `turnstile_verified` 保存凭证；响应 Header 尚未实际写入。
+
+***
+
+### `GET /api/version` - 异步获取更新版本（个人分支）
+
+- 仅接受有效管理员 JWT 或登录 Cookie；公开站点和只读 App 访问口令不免除此要求。
+- 沿用全局 Turnstile 和 CORS 校验，不使用 `/api/config` 的初始化 bypass。
+- 返回 `{ "version": "当前Workers版本", "last_workers_version": "...", "last_agent_version": "..." }`；上游不可用且无旧值时相应字段为 `null`。
+- GitHub 结果沿用每个 Worker isolate 的10分钟缓存、30秒失败退避、并发请求合并及2秒请求超时。HTTP响应为 `Cache-Control: private, no-store`。
+- 内置前端挂载后异步调用；失败不阻止主页。后台登录、初始化、切站和刷新也不等待版本请求；浏览器不再直连GitHub。同站并发请求合并，跨站只采用最后请求站点的版本结果。`/api/config` 保留原字段形状，但只读已知缓存，冷启动可能为 `null`。第三方主题若需要立即检查更新，可在完成初始化后调用此接口。
 
 ***
 

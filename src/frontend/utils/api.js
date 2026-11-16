@@ -421,6 +421,31 @@ export const logout = () => {
   localStorage.removeItem(STORAGE.JWT_TOKEN)
 }
 
+// Optional update metadata is requested after mounting, never during startup.
+const remoteVersionRequests = new Map()
+let activeVersionApiIndex = null
+export const fetchRemoteVersion = (apiIndex = 0) => {
+  if (activeVersionApiIndex !== apiIndex) {
+    LAST_WORKERS_VERSION.value = ''
+    LAST_AGENT_VERSION.value = ''
+  }
+  activeVersionApiIndex = apiIndex
+  if (remoteVersionRequests.has(apiIndex)) return remoteVersionRequests.get(apiIndex)
+  const promise = http.getByIndex('/api/version', apiIndex, {
+    includeAuth: true, includeTurnstile: true, autoRedirect: false
+  }).then(result => {
+    if (result.error || !result.data) return null
+    if (activeVersionApiIndex === apiIndex) {
+      if (result.data.version) VERSION.value = result.data.version
+      LAST_WORKERS_VERSION.value = result.data.last_workers_version || ''
+      LAST_AGENT_VERSION.value = result.data.last_agent_version || ''
+    }
+    return result.data
+  }).finally(() => remoteVersionRequests.delete(apiIndex))
+  remoteVersionRequests.set(apiIndex, promise)
+  return promise
+}
+
 export const fetchConfig = async (apiIndex = 0) => {
   const result = await http.getByIndex('/api/config', apiIndex, { includeAuth: true, includeTurnstile: false })
   if (result.error) return null

@@ -5,11 +5,13 @@ import { normalizeAdminEntryUrl } from './adminEntryUrl'
 // 之后再 replaceState 只改地址栏。放在同一模块内执行，避免依赖 import 的求值顺序。
 normalizeAdminEntryUrl()
 
+export const loadDashboard = () => import('../views/Dashboard.vue')
+
 const routes = [
   {
     path: '/',
     name: 'Dashboard',
-    component: () => import('../views/Dashboard.vue')
+    component: loadDashboard
   },
   {
     path: '/admin',

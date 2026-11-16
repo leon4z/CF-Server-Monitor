@@ -13,7 +13,7 @@ import { getServerDetail, getMetricsHistoryCache, setMetricsHistoryCache, getCac
 import { AppError, createSuccessResponse, createUnauthorizedResponse, createBadRequestResponse, createNotFoundResponse, createErrorResponse } from './utils/errors.js';
 import { verifyTurnstileToken } from './utils/common.js';
 import { getCorsAllowedOrigins, createOptionsResponse, applyCors } from './utils/cors.js';
-import { getRemoteVersion } from './utils/version.js';
+import { getCachedRemoteVersion, getRemoteVersion } from './utils/version.js';
 import {
   HISTORY_ALL_QUERY_COLUMNS
 } from './utils/historyFields.js';
@@ -295,6 +295,16 @@ export default {
           return createSuccessResponse({ ok: false, reason: e.message });
         }
       }},
+      { method: 'GET', path: '/api/version', handler: async () => {
+        await ensureSiteSettings();
+        if (!await checkAuth(request, env, sys)) return createUnauthorizedResponse();
+        const remoteVersion = await getRemoteVersion();
+        return createSuccessResponse({
+          version: CURRENT_VERSION,
+          last_workers_version: remoteVersion?.workers || null,
+          last_agent_version: remoteVersion?.agent || null
+        }, { 'Cache-Control': 'private, no-store' });
+      }},
       { method: 'GET', path: '/api/config', handler: async () => {
         await ensureSiteSettings();
         const appearanceOptions = await loadAppearanceOptions(env.DB);
@@ -314,7 +324,7 @@ export default {
         }
 
         const isLoggedIn = await checkAuth(request, env, sys);
-        const remoteVersion = isLoggedIn ? await getRemoteVersion() : null;
+        const remoteVersion = isLoggedIn ? getCachedRemoteVersion() : null;
 
         return createSuccessResponse({
           version: CURRENT_VERSION,
