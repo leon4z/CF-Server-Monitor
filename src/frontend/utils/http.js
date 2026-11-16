@@ -30,6 +30,19 @@ const redirectToAdminLogin = () => {
   window.location.assign(adminPath)
 }
 
+// Used when the application adopts a side-effect-free early config response.
+export const applySessionResult = (result) => {
+  if (result?.status === 401) localStorage.removeItem(STORAGE.JWT_TOKEN)
+  else if (result?.status === 403) {
+    localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
+    localStorage.removeItem(TURNSTILE_VERIFIED_KEY)
+  } else if (!result?.error && result?.data?.turnstile_verified) {
+    localStorage.setItem(TURNSTILE_VERIFIED_KEY, result.data.turnstile_verified)
+    localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
+  }
+  return result
+}
+
 const createHeaders = (includeAuth = true, includeTurnstile = true, baseUrl = null, options = {}) => {
   const {
     includeTurnstileToken = includeTurnstile,
@@ -67,7 +80,7 @@ const handleResponse = async (res, options = {}) => {
   const { autoRedirect = true, baseUrl = null, updateSession = true } = options
   
   if (res.status === 401) {
-    if (updateSession) localStorage.removeItem(STORAGE.JWT_TOKEN)
+    if (updateSession) applySessionResult({ status: 401 })
     if (autoRedirect) {
       redirectToAdminLogin()
     }
@@ -76,8 +89,7 @@ const handleResponse = async (res, options = {}) => {
   
   if (res.status === 403) {
     if (updateSession) {
-      localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
-      localStorage.removeItem(TURNSTILE_VERIFIED_KEY)
+      applySessionResult({ status: 403 })
     }
     if (autoRedirect) {
       window.location.reload()
@@ -111,10 +123,7 @@ const handleResponse = async (res, options = {}) => {
   
   try {
     const data = await res.json()
-    if (updateSession && data && data.turnstile_verified) {
-      localStorage.setItem(TURNSTILE_VERIFIED_KEY, data.turnstile_verified)
-      localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
-    }
+    if (updateSession) applySessionResult({ data, status: res.status })
     return { data, status: res.status }
   } catch (e) {
     return { data: null, status: res.status }

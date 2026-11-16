@@ -65,6 +65,18 @@ Maintained branch: `personal`. `main` is an upstream baseline, currently
 The existing WebSocket unit test disables Vite's application config so it
 cannot install a developer certificate as a side effect of running tests.
 
+8. Production HTML includes a small inline startup entry without Vue. On a
+   single-site homepage it preloads the dashboard modules and starts bounded
+   config/inventory reads while the main module downloads. Requests reuse the
+   normal HTTP headers, remain side-effect-free until config adoption, never
+   consume a fresh one-time challenge, and are accepted once only if route,
+   API bases and credentials still match. Admin/multi-site paths retain normal
+   startup; an unavailable bootstrap falls back to the main application.
+9. Config reads site and appearance settings concurrently. Their legacy-row
+   lookup is shared only within that logical settings read; existing cache
+   lifetimes, permission checks, defaults and save behavior stay unchanged.
+   There is no schema migration, persistent cache or settings backfill.
+
 ## Verification
 
 ```sh

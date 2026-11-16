@@ -6,11 +6,12 @@ import './styles/main.css'
 import './styles/light.css'
 import { STORAGE } from './utils/constants'
 import { applyDefaultLanguage, preloadLanguage, currentLang, normalizeLanguagePreference, resolveLanguagePreference, translations } from './utils/i18n'
-import { http, DEFAULT_REQUEST_TIMEOUT_MS } from './utils/http'
+import { http, DEFAULT_REQUEST_TIMEOUT_MS, applySessionResult } from './utils/http'
 import { initConfig, hasMultipleApiBases } from './utils/config'
 import { LAST_AGENT_VERSION, LAST_WORKERS_VERSION, VERSION, fetchRemoteVersion, normalizeLiveSocketTimeoutMinutes } from './utils/api'
 import { resolveDisplayMode } from './utils/displayMode'
 import { createStartupLiveSocket } from './utils/startupLive'
+import { takeStartupReads } from './utils/startupReads'
 import { getMikusAssetUrl, isMikusThemeEnabled, normalizeThemeOptions, setMikusThemeClass } from './utils/themeOptions'
 import { applyDefaultTheme } from './composables/useTheme'
 import {
@@ -70,9 +71,10 @@ const applyStartupThemeOptions = (config) => {
   }
 }
 
-async function fetchConfig() {
+async function fetchConfig(initialResult = null) {
   try {
-    let result = await http.get('/api/config', { includeAuth: true, includeTurnstile: true, autoRedirect: false, timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
+    let result = initialResult ? applySessionResult(await initialResult)
+      : await http.get('/api/config', { includeAuth: true, includeTurnstile: true, autoRedirect: false, timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
 
     // 超时或 403：清掉可疑的 Turnstile 缓存，不带 header 重试走 bypass 路径
     if (result.error && (result.timeout || result.status === 403)) {
@@ -303,14 +305,15 @@ async function initApp() {
   // Importing the page does not mount it or request private server data.
   void preloadLanguage()
   const routePath = (currentHash.replace(/^#/, '') || '/').split('?')[0]
-  let startupServers = null
+  const startupReads = takeStartupReads()
+  let startupServers = startupReads?.servers || null
   let startupLive = null
   if (!isAdmin && routePath === '/') {
     void loadDashboard().catch(() => { /* The router handles a failed navigation import. */ })
     if (!isMultipleMode && localStorage.getItem(STORAGE.JWT_TOKEN)) {
       // The endpoint still enforces auth/Turnstile. Speculation must not clear
       // credentials or redirect while authoritative startup checks are running.
-      startupServers = http.get('/api/servers?realtime=deferred', {
+      startupServers ||= http.get('/api/servers?realtime=deferred', {
         autoRedirect: false, updateSession: false, includeTurnstileToken: false,
         timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
       }).catch(() => null)
@@ -362,7 +365,7 @@ async function initApp() {
       config = { turnstile_enabled: false, turnstile_login_enabled: false, turnstile_site_key: '', turnstile_api_index: 0, version: '', last_workers_version: '', last_agent_version: '', verified: false, is_public: true, authorization: false, site_title: '', display_mode: 'bar', preferred_theme: 'auto', default_language: 'auto', frontend_ws_timeout_minutes: 0, theme_options: {} }
     }
   } else {
-    config = await fetchConfig()
+    config = await fetchConfig(startupReads?.config)
   }
 
   applyDefaultTheme(config?.preferred_theme)

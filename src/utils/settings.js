@@ -693,10 +693,12 @@ function hasMissingFields(source, fields) {
   return fields.some(field => source[field] === undefined && !LEGACY_FALLBACK_EXEMPT_FIELDS.has(field));
 }
 
-async function loadLegacySettings(db, fields) {
+async function loadLegacySettings(db, fields, readContext = null) {
   const legacy = {};
   const fieldSet = new Set(fields);
-  const { results } = await db.prepare('SELECT * FROM settings').all();
+  const read = () => db.prepare('SELECT * FROM settings').all();
+  // Shared only within one logical settings read, never across requests or saves.
+  const { results } = await (readContext ? (readContext.legacyRows ||= read()) : read());
   if (results && results.length > 0) {
     results.forEach(r => {
       if (fieldSet.has(r.key)) {
@@ -768,7 +770,7 @@ export async function loadSiteSettings(db, options = {}) {
     }
 
     if (hasMissingFields(siteOptions, SITE_FIELDS)) {
-      copyFields(result, await loadLegacySettings(db, SITE_FIELDS), SITE_FIELDS);
+      copyFields(result, await loadLegacySettings(db, SITE_FIELDS, options?.readContext), SITE_FIELDS);
     }
     copyFields(result, siteOptions, SITE_FIELDS);
 
@@ -834,7 +836,7 @@ export function normalizeAppearanceOptions(options = {}) {
   return options;
 }
 
-export async function loadAppearanceOptions(db) {
+export async function loadAppearanceOptions(db, options = {}) {
   const now = Date.now();
   if (cachedAppearanceOptions && now < appearanceOptionsCacheExpiry) {
     debug('Appearance缓存命中');
@@ -859,7 +861,7 @@ export async function loadAppearanceOptions(db) {
 
     const needsLegacyAppearance = hasMissingFields(appearanceOptions, APPEARANCE_FIELDS);
     if (needsLegacyAppearance) {
-      const legacy = await loadLegacySettings(db, APPEARANCE_FIELDS);
+      const legacy = await loadLegacySettings(db, APPEARANCE_FIELDS, options.readContext);
       copyFields(result, legacy, APPEARANCE_FIELDS);
     }
     copyFields(result, appearanceOptions, APPEARANCE_FIELDS);
@@ -926,10 +928,11 @@ export async function saveAppearanceOptions(db, updates = {}) {
   return appearanceOptions;
 }
 
-export async function loadSettings(db) {
+export async function loadSettings(db, options = {}) {
+  const readContext = options.readContext || {};
   const [siteSettings, appearanceOptions] = await Promise.all([
-    loadSiteSettings(db),
-    loadAppearanceOptions(db)
+    loadSiteSettings(db, { readContext }),
+    loadAppearanceOptions(db, { readContext })
   ]);
   return { ...defaults, ...siteSettings, ...appearanceOptions };
 }

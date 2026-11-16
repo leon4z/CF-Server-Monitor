@@ -242,9 +242,10 @@ export default {
 
     let setTurnstileVerified = false;
     let sys = null;
+    const settingsReadContext = {};
 
     if (isApiRequest && !isTurnstileBypassed(path)) {
-      sys = await loadSiteSettings(env.DB);
+      sys = await loadSiteSettings(env.DB, { readContext: settingsReadContext });
       const turnstileEnabled = sys.turnstile_enabled === 'true';
       const turnstileSecretKey = sys.turnstile_secret_key || '';
       
@@ -270,13 +271,13 @@ export default {
 
     async function ensureSiteSettings() {
       if (!sys) {
-        sys = await loadSiteSettings(env.DB);
+        sys = await loadSiteSettings(env.DB, { readContext: settingsReadContext });
       }
       return sys;
     }
 
     async function ensureFullSettings() {
-      sys = await loadSettings(env.DB);
+      sys = await loadSettings(env.DB, { readContext: settingsReadContext });
       return sys;
     }
 
@@ -306,8 +307,10 @@ export default {
         }, { 'Cache-Control': 'private, no-store' });
       }},
       { method: 'GET', path: '/api/config', handler: async () => {
-        await ensureSiteSettings();
-        const appearanceOptions = await loadAppearanceOptions(env.DB);
+        const [, appearanceOptions] = await Promise.all([
+          ensureSiteSettings(),
+          loadAppearanceOptions(env.DB, { readContext: settingsReadContext })
+        ]);
         const turnstileEnabled = sys.turnstile_enabled === 'true';
         const turnstileLoginEnabled = sys.turnstile_login_enabled === 'true';
         let verified = false;
