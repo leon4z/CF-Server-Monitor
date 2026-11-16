@@ -44,6 +44,23 @@ Maintained branch: `personal`. `main` is an upstream baseline, currently
    an already timed-out speculative read does not start a second timeout.
    History queries retain their original behavior. Failed initial lazy routing
    also releases the startup overlay.
+6. Single-site homepage reads opt into `/api/servers?realtime=deferred`, keeping
+   inventory, persisted metrics, traffic counters and latency history without
+   waiting for the realtime coordinator. The default API and detail route retain
+   their existing behavior. An authorized `snapshot=1` WebSocket sends the
+   latest permitted state immediately; its visible IDs come from the Worker,
+   never a client-supplied allowlist, and remain restricted on resubscription.
+   Existing sessions may establish this connection during config loading, but
+   messages stay buffered until startup access is accepted and inventory arrives.
+   Denied startup and configured lifetime limits close/recreate early connections.
+7. Latest bootstrap state survives Durable Object hibernation in its existing
+   storage: one IP-masked sample per host, five-minute validity and a 64 KiB cap.
+   Writes are serialized and timestamp ordered; failures preserve normal report
+   handling, and missing cached hosts wait for real reports. This is separate
+   from D1 metric history and does not change probe intervals or traffic billing.
+   The frontend orders REST, snapshot and live samples by sample/report time,
+   retains newer queued samples, keeps inventory metadata authoritative, and
+   allows genuinely newer monthly resets to reduce counters.
 
 The existing WebSocket unit test disables Vite's application config so it
 cannot install a developer certificate as a side effect of running tests.

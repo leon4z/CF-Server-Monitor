@@ -50,3 +50,24 @@ test('speculative startup reads preserve sessions and only reuse successful sing
     await vite.close()
   }
 })
+
+test('early realtime messages stay private until one authenticated adoption and are discarded on close', async () => {
+  const vite = await createServer({ configFile: false, appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } })
+  try {
+    const { createStartupLiveSocket } = await vite.ssrLoadModule('/src/frontend/utils/startupLive.js')
+    let callbacks, closed = 0
+    const socket = { close() { closed++ } }
+    const early = createStartupLiveSocket((_scope, handlers) => { callbacks = handlers; return socket })
+    const received = []
+    callbacks.onMessage({type:'snapshot',updates:[{serverId:'synthetic'}]})
+    assert.deepEqual(received, [])
+    const adopted = early.take({ onMessage: message => received.push(message) })
+    assert.equal(adopted, socket); assert.equal(received.length, 1)
+    assert.equal(early.take({}), null)
+    callbacks.onMessage({type:'batchUpdate',updates:[]}); assert.equal(received.length,2)
+    early.close(); callbacks.onMessage({type:'snapshot'}); assert.equal(received.length,2); assert.equal(closed,1)
+    const denied = createStartupLiveSocket((_scope, handlers) => { callbacks = handlers; return socket })
+    callbacks.onMessage({type:'snapshot'}); denied.close(); assert.equal(denied.take({onMessage:message=>received.push(message)}),null)
+    assert.equal(received.length,2)
+  } finally { await vite.close() }
+})

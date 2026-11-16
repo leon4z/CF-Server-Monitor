@@ -386,6 +386,7 @@ import { TIME, DEFAULT_SITE_TITLE, STORAGE, LATENCY_WINDOW } from '../utils/cons
 import { normalizeTimestamp as normalizeMetricTimestamp } from '../utils/time.js'
 import { normalizeDashboardView, normalizeDisplayMode, resolveDisplayMode } from '../utils/displayMode.js'
 import { getPlaybackElapsedMs, resolvePlaybackCursor } from '../utils/playback.js'
+import { acceptsSample, latestReportSample, mergeInventoryState, mergePendingSamples, metricPayload } from '../utils/stateOrder.js'
 import { getMikusAssetUrl, isMikusThemeEnabled, normalizeThemeOptions, setMikusThemeClass } from '../utils/themeOptions.js'
 import {
   CURRENCY_SYMBOLS,
@@ -406,6 +407,7 @@ const unknownStats = ref(0)
 const appConfig = inject('appConfig', null)
 const takeStartupServers = inject('takeStartupServers', () => null)
 const finishStartup = inject('finishStartup', () => {})
+const takeStartupLive = inject('takeStartupLive', () => null)
 const sysConfig = ref({
   show_price: true,
   show_expire: true,
@@ -739,6 +741,10 @@ const getUpdateTime = (lastUpdated) => {
 const PLAYBACK_TICK_MS = 1000
 const MAX_BUFFER_SAMPLES_PER_SERVER = 600
 const playbackBuffers = new Map()
+const appliedLiveStates = new Map()
+const inventoryStates = new Map()
+let inventoryReady = false
+let pendingLiveMessages = []
 
 const getServerReportTimestamp = (server, fallback = null) => {
   return normalizeMetricTimestamp(server?.report_timestamp ?? server?.last_updated, fallback)
@@ -798,9 +804,7 @@ const queueLiveSamples = (serverId, samples, reportTs, { replayCachedReport = fa
   const current = servers.value.find(s => s.id === serverId)
   const currentTs = getServerSampleTimestamp(current)
   const currentDisplayTs = getServerDisplayTimestamp(current)
-  const incoming = replayCachedReport
-    ? normalized
-    : normalized.filter(sample => !currentTs || sample.ts > currentTs)
+  const incoming = normalized.filter(sample => !currentTs || sample.ts > currentTs)
   if (incoming.length === 0) return
 
   const playbackStartTs = resolvePlaybackCursor(incoming[0].ts, currentDisplayTs, {
@@ -809,26 +813,36 @@ const queueLiveSamples = (serverId, samples, reportTs, { replayCachedReport = fa
   })
   if (playbackStartTs === null) return
 
-  if (incoming.length === 1) {
+  if (incoming.length === 1 && !playbackBuffers.has(serverId)) {
     playbackBuffers.delete(serverId)
     const sample = incoming[0]
     applyServerSample(serverId, sample.data, sample.ts, playbackStartTs, reportTs)
     return
   }
 
-  const unique = []
-  const seen = new Set()
-  for (const sample of incoming) {
-    if (seen.has(sample.ts)) continue
-    seen.add(sample.ts)
-    unique.push(sample)
-  }
-  playbackBuffers.set(serverId, unique.slice(-MAX_BUFFER_SAMPLES_PER_SERVER))
+  playbackBuffers.set(serverId, mergePendingSamples(playbackBuffers.get(serverId), incoming, currentTs || 0, MAX_BUFFER_SAMPLES_PER_SERVER))
   applyPlaybackSamplesForServer(serverId, playbackStartTs)
 }
 
 const queueLiveMessage = (msg, { replayCachedReport = false } = {}) => {
-  if (!msg || msg.type !== 'batchUpdate') return
+  if (!msg || !['batchUpdate', 'snapshot'].includes(msg.type)) return
+  if (!inventoryReady) {
+    pendingLiveMessages.push({ message: msg, replayCachedReport })
+    if (pendingLiveMessages.length > 64) pendingLiveMessages.shift()
+    return
+  }
+  if (msg.type === 'snapshot') {
+    for (const update of msg.updates || []) {
+      const latest = latestReportSample(update)
+      const current = servers.value.find(server => server.id === update.serverId)
+      if (!latest || !current || !acceptsSample(current, latest.ts, latest.reportTs)) continue
+      const pending = playbackBuffers.get(update.serverId) || []
+      if (pending.some(sample => sample.ts > latest.ts)) continue
+      playbackBuffers.delete(update.serverId)
+      applyServerSample(update.serverId, latest.data, latest.ts, latest.ts, latest.reportTs)
+    }
+    return
+  }
 
   const messageReportTs = normalizeMetricTimestamp(msg.ts, Date.now())
 
@@ -864,10 +878,11 @@ const applyServerSample = (serverId, data, sampleTs, displayTs, reportTs = null)
   if (!serverId || !data) return
   const idx = servers.value.findIndex(s => s.id === serverId)
   const existing = idx >= 0 ? servers.value[idx] : null
+  if (!existing || !acceptsSample(existing, sampleTs, reportTs)) return
   const currentReportTs = getServerReportTimestamp(existing, null)
   const nextReportTs = normalizeMetricTimestamp(reportTs, currentReportTs || now.value)
   const merged = withDisplayTiming({
-    ...data,
+    ...metricPayload(data),
     id: serverId,
     report_timestamp: nextReportTs,
     last_updated: nextReportTs,
@@ -877,6 +892,7 @@ const applyServerSample = (serverId, data, sampleTs, displayTs, reportTs = null)
 
   if (idx >= 0) {
     servers.value[idx] = { ...servers.value[idx], ...merged }
+    appliedLiveStates.set(serverId, { data: { ...data }, ts: sampleTs, reportTs: nextReportTs })
   } else {
     servers.value.push({ ...merged, name: serverId })
   }
@@ -965,9 +981,12 @@ const mergeServersIntoList = (rawServers) => {
   const existingById = new Map(servers.value.map(s => [s.id, s]))
   return rawServers.map(s => {
     const prev = existingById.get(s.id)
-    const sampleTs = normalizeMetricTimestamp(s.sample_timestamp ?? s.timestamp ?? s.last_updated, getServerSampleTimestamp(prev))
-    const reportTs = normalizeMetricTimestamp(s.report_timestamp ?? s.last_updated, getServerReportTimestamp(prev, null))
-    return withDisplayTiming({ ...prev, ...s, sample_timestamp: sampleTs, report_timestamp: reportTs }, sampleTs, now.value)
+    const inventory = mergeInventoryState(s, null, inventoryStates.get(s.id))
+    inventoryStates.set(s.id, inventory)
+    const ordered = mergeInventoryState(inventory, appliedLiveStates.get(s.id))
+    const sampleTs = normalizeMetricTimestamp(ordered.sample_timestamp ?? ordered.timestamp ?? ordered.last_updated, getServerSampleTimestamp(prev))
+    const reportTs = normalizeMetricTimestamp(ordered.report_timestamp ?? ordered.last_updated, getServerReportTimestamp(prev, null))
+    return withDisplayTiming({ ...prev, ...ordered, sample_timestamp: sampleTs, report_timestamp: reportTs }, sampleTs, now.value)
   })
 }
 
@@ -1123,6 +1142,18 @@ const startLiveSocket = () => {
   }
 
   // 如果没有配置多个 API bases，使用原来的单连接方式
+  if (!hasMultipleApiBases()) {
+    const handlers = {
+      initialSnapshot: true, replay: false,
+      timeoutMinutes: sysConfig.value.frontend_ws_timeout_minutes,
+      onMessage: queueLiveMessage,
+      onTimeout: () => { showLiveTimeoutModal.value = true },
+      onStatus: ({ connected }) => { liveConnected.value = !!connected }
+    }
+    const early = takeStartupLive(handlers)
+    liveSockets = [early || createLiveSocket('all', handlers, 0, servers.value.map(server => server.id).filter(Boolean))]
+    return
+  }
   if (bases.length === 0) {
     const allIds = servers.value.map(s => s.id).filter(Boolean)
     liveSockets = [createLiveSocket('all', {
@@ -1325,6 +1356,7 @@ onMounted(async () => {
   loadFinanceRates()
 
   await loadDashboardConfig()
+  if (!hasMultipleApiBases()) startLiveSocket()
   const rawSavedView = localStorage.getItem(STORAGE.VIEW_PREFERENCE)
   const savedView = normalizeDashboardView(rawSavedView, sysConfig.value.display_mode)
   currentView.value = savedView
@@ -1332,6 +1364,14 @@ onMounted(async () => {
     localStorage.setItem(STORAGE.VIEW_PREFERENCE, savedView)
   }
   await refreshData()
+  inventoryReady = true
+  const queued = pendingLiveMessages
+  pendingLiveMessages = []
+  for (const item of queued) queueLiveMessage(item.message, { replayCachedReport: item.replayCachedReport })
+  if (!hasMultipleApiBases()) {
+    const ids = servers.value.map(server => server.id).filter(Boolean)
+    for (const socket of liveSockets) socket?.setServerIds?.(ids)
+  }
   await nextTick()
   finishStartup()
   scheduleFilterMeasurement()
@@ -1342,7 +1382,7 @@ onMounted(async () => {
     window.addEventListener('resize', scheduleFilterMeasurement)
   }
   document.addEventListener('click', closeFilterMoreOnOutsideClick)
-  startLiveSocket()
+  if (hasMultipleApiBases()) startLiveSocket()
   document.addEventListener('visibilitychange', handleVisibility)
 
   // 每秒更新 now 变量，使相对时间实时刷新

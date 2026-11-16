@@ -31,6 +31,7 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
   let connectionLifetimeTimer = null
   const MAX_REPLAY_DELAY = 120000
   let isConnected = false
+  let subscribedIds = Array.isArray(serverIds) ? serverIds : []
   const replayTimers = new Set()
 
   const getWsBaseByIndex = (index) => {
@@ -143,11 +144,12 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
   }
 
   const connect = () => {
-    manualClose = false
+    if (manualClose) return
     let socket = null
     try {
       const url = new URL(`${getWsBaseByIndex(apiIndex)}/api/ws`)
       url.searchParams.set('subscribe', scope)
+      if (handlers.initialSnapshot === true) url.searchParams.set('snapshot', '1')
       const token = getJwtToken()
       if (token && !isSameHostWebSocket(url)) {
         url.searchParams.set('token', token)
@@ -170,7 +172,7 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
         socket.send(JSON.stringify({
           type: 'subscribe',
           scope,
-          ids: Array.isArray(serverIds) ? serverIds : []
+          ids: subscribedIds
         }))
       } catch (_) {}
       setStatus(true, 'connected')
@@ -226,18 +228,24 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
       return
     }
 
+    const delay = reconnectDelay
+    reconnectAttempts++
+    reconnectDelay = Math.min(reconnectDelay * 2, TIME.RECONNECT_MAX_DELAY_MS)
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
-      reconnectAttempts++
-      const delay = reconnectDelay
-      reconnectDelay = Math.min(reconnectDelay * 2, TIME.RECONNECT_MAX_DELAY_MS)
-      setTimeout(connect, delay)
-    }, 50)
+      if (!manualClose) connect()
+    }, 50 + delay)
   }
 
   connect()
 
   return {
+    setServerIds(ids) {
+      subscribedIds = Array.isArray(ids) ? ids : []
+      if (ws?.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: 'subscribe', scope, ids: subscribedIds })) } catch (_) {}
+      }
+    },
     close() {
       manualClose = true
       reconnectAttempts = TIME.MAX_RECONNECT_ATTEMPTS
@@ -253,7 +261,9 @@ export const createLiveSocket = (subscribe, handlers = {}, apiIndex = 0, serverI
       clearReplayTimers()
       clearConnectionLifetimeTimer()
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-      if (ws) { try { ws.close() } catch (_) {} ws = null }
+      const previous = ws
+      ws = null
+      if (previous) { try { previous.close() } catch (_) {} }
       setStatus(false, 'reconnecting')
       connect()
     },
@@ -290,7 +300,8 @@ export const fetchServersAll = async (initialResult = null) => {
     (initialResult?.status === 200 && !initialResult.error && Array.isArray(initialResult.data?.servers)))
   // A timed-out prefetch has already spent the startup budget. Auth/challenge
   // failures may retry after config settles, but never wait on an unbounded read.
-  const results = reusable ? [initialResult] : await http.getAll('/api/servers', { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
+  const path = multiSite ? '/api/servers' : '/api/servers?realtime=deferred'
+  const results = reusable ? [initialResult] : await http.getAll(path, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
   const localTitle = getTitle() || DEFAULT_SITE_TITLE
 
   const mergedData = createEmptyMergedData()

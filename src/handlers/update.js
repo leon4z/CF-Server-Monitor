@@ -1,5 +1,5 @@
 import { saveMetricsHistory } from '../database/schema.js';
-import { getServerDetail, clearServerDetailCache, patchServerDetailCache } from '../utils/cache.js';
+import { getAllServers, getServerDetail, clearServerDetailCache, patchServerDetailCache } from '../utils/cache.js';
 import { evaluateTrafficAlert } from '../services/notification.js';
 import {
   DISK_IO_FIELD_TO_COLUMN,
@@ -865,10 +865,12 @@ async function forwardWebSocketUpgrade(request, env, internalPath, logPrefix) {
 
 export async function handleWebSocketUpgrade(request, env) {
   const settings = await loadSiteSettings(env.DB, { forceRefresh: true });
+  const wantsSnapshot = new URL(request.url).searchParams.get('snapshot') === '1';
+  const canViewPrivate = (settings?.is_public !== 'true' || wantsSnapshot)
+    && (await checkWebSocketAuth(request, env, settings) || hasAppPasswordAccess(request, settings));
   // 私有站点的实时订阅：登录态或第三方 App 口令任一通过即可。
   const authorized = settings?.is_public === 'true'
-    || await checkWebSocketAuth(request, env, settings)
-    || hasAppPasswordAccess(request, settings);
+    || canViewPrivate;
   if (!authorized) {
     return new Response(JSON.stringify({ error: 'Unauthorized', code: 401 }), {
       status: 401,
@@ -876,7 +878,15 @@ export async function handleWebSocketUpgrade(request, env) {
     });
   }
 
-  const response = await forwardWebSocketUpgrade(request, env, '/ws', '[ws]');
+  // Only the trusted Worker may supply snapshot visibility. Never forward a
+  // client-provided allowlist to the Durable Object.
+  const headers = new Headers(request.headers);
+  headers.delete('X-CFSM-Snapshot-Ids');
+  if (wantsSnapshot) {
+    const visible = await getAllServers(env.DB, canViewPrivate);
+    headers.set('X-CFSM-Snapshot-Ids', JSON.stringify(visible.map(server => server.id)));
+  }
+  const response = await forwardWebSocketUpgrade(new Request(request, { headers }), env, '/ws', '[ws]');
   if (response?.status === 101) {
     markFrontendRealtimeActive();
   }

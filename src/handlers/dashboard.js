@@ -222,9 +222,10 @@ export async function handleServersAPI(request, env, sys) {
   const shouldIncludeLatencyHistory = sys.show_three_net_details === 'true';
   
   const serverIds = results.map(server => server.id).filter(Boolean);
+  const deferRealtime = new URL(request.url).searchParams.get('realtime') === 'deferred';
   const [latestMetricsMap, realtimeState, latencyHistory] = await Promise.all([
     getLatestMetricsForAllServers(env.DB),
-    getRealtimeStateForServers(env, serverIds),
+    deferRealtime ? Promise.resolve({ latestReportUpdates: [] }) : getRealtimeStateForServers(env, serverIds),
     shouldIncludeLatencyHistory
       ? getDashboardLatencyHistory(env.DB, results)
       : Promise.resolve(new Map())

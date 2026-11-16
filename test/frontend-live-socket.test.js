@@ -33,7 +33,7 @@ class FakeWebSocket {
   }
 }
 
-test('frontend WebSocket closes at its lifetime limit without reconnecting', async () => {
+test('frontend WebSocket lifetime and explicit close cancel all pending reconnects', async () => {
   const vite = await createServer({
     configFile: false,
     appType: 'custom',
@@ -105,6 +105,26 @@ test('frontend WebSocket closes at its lifetime limit without reconnecting', asy
     assert.equal(normalizeLiveSocketTimeoutMinutes(20), 20)
     assert.equal(normalizeLiveSocketTimeoutMinutes(-1), 0)
     assert.equal(normalizeLiveSocketTimeoutMinutes(1441), 0)
+
+    // A disconnected early connection must stay closed after access is denied,
+    // including when a previously queued reconnect callback races with close.
+    unlimitedWebSocket.emit('close')
+    const outer = timers.at(-1)
+    if (outer.delay === 50) outer.callback() // Reproduce the old nested-timer gap.
+    const pending = timers.at(-1)
+    unlimitedSocket.close()
+    assert.equal(pending.cleared, true)
+    pending.callback()
+    assert.equal(FakeWebSocket.instances.length, 2)
+
+    // Explicit reconnect creates one connection, with no old socket's close
+    // handler scheduling an additional attempt.
+    unlimitedSocket.reconnect()
+    assert.equal(FakeWebSocket.instances.length, 3)
+    const timerCount = timers.length
+    unlimitedSocket.reconnect()
+    assert.equal(FakeWebSocket.instances.length, 4)
+    assert.equal(timers.length, timerCount)
   } finally {
     liveSocket?.close()
     unlimitedSocket?.close()

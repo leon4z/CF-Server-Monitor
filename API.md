@@ -657,6 +657,7 @@ CORS_ALLOWED_ORIGINS=https://status.example.com,https://admin.example.com
 
 - Method：`GET`
 - Path：`/api/servers`
+- Query（个人 fork）：`realtime=deferred` 可选。只返回库存、最近落库指标、月流量及原三网历史，`latestReportUpdates` 为空，不等待 DO。省略时沿用原完整读取；鉴权、隐藏主机过滤及历史抽样保持。
 - Headers（按需）：`Authorization: Bearer <jwt>`、`X-App-Password: <app_password>`、`X-Turnstile-Token` 或 `X-Turnstile-Verified`
 
 **Response** `200 OK`
@@ -918,6 +919,7 @@ Content-Type: application/json
 - Method：`GET`（**必须**带 `Upgrade: websocket` Header）
 - Path：`/api/ws`
 - Query：
+  - `snapshot=1`（个人 fork 可选）：握手后补发 `snapshot`，结构为 `{type:"snapshot",ts,updates,missingIds}`；`updates` 携带已有报告的原时间，`missingIds` 表示暂无可用缓存，不是零值或新采集。Worker 根据当前登录/App权限和库存生成可信可见ID列表，客户端不能自报许可；该连接的初始和后续订阅始终受此列表限制。
   - `subscribe`（可选，默认 `all`）：
     - `all` → 订阅所有服务器的最新指标（**批量合并推送，每 5 秒一次**）
     - `<serverId>` → 只订阅指定服务器；~~收到上报后立即实时推送。~~ **2026-07-26 修订**：同样经过最长约 5 秒的 Worker 合并窗口
@@ -949,6 +951,8 @@ Sec-WebSocket-Version: 13
 | `subscribe=<serverId>` | 实时推送 | `batchUpdate` | 单台服务器更新不进入 250ms 合并窗口，消息格式与全量订阅一致 |
 
 > `subscribe=all` 默认不推送任何服务器更新。客户端应先调用 `/api/servers` 获取当前可见服务器列表，再通过 WebSocket 通道发送 `subscribe` 消息，使用 `servers[].id` 作为过滤列表。
+
+个人 fork 的 `snapshot=1` 连接可提前建立：默认仅订阅 Worker 当前授权可见的库存，清单取得后客户端再明确发送实际 IDs。原模式不变。最新 bootstrap 报告在 DO 现有存储中保留每台最后一个样本，沿用五分钟有效期，总编码上限64KiB，以支持休眠后补发；不替代D1历史。超大单样本跳过，冷缓存或过期主机等待下一次真实报告。合并时按样本时间及同样本的报告时间排序，不允许旧快照覆盖新状态，也不将真实月重置当作回退而取计数最大值。
 
 **服务端 → 客户端消息**：
 

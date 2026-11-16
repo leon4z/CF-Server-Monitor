@@ -1088,6 +1088,7 @@ export class MetricsBroadcaster {
       await this._cacheResourceAlertSamples(normalizedUpdates, reportTs);
     }
     this._cacheLatestReportUpdates(normalizedUpdates, reportTs);
+    await this._persistFrontendSnapshots(normalizedUpdates, reportTs);
     if (options.batchFrontend === true) {
       this._broadcastBatch(normalizedUpdates, reportTs, 'single');
       this._queueFrontendBroadcastBatch(normalizedUpdates, reportTs);
@@ -1437,6 +1438,7 @@ export class MetricsBroadcaster {
       await this._ingestRealtimeUpdates(normalizedUpdates, reportTs, { batchFrontend: true });
     } else {
       this._cacheLatestReportUpdates(normalizedUpdates, reportTs);
+      await this._persistFrontendSnapshots(normalizedUpdates, reportTs);
     }
 
     const persisted = await this._persistAgentHistoryIfDue(ws, context.attachment, {
@@ -1570,6 +1572,17 @@ export class MetricsBroadcaster {
         return new Response('Invalid subscription scope', { status: 400 });
       }
 
+      let snapshotServerIds = null;
+      try {
+        const rawIds = request.headers.get('X-CFSM-Snapshot-Ids');
+        if (rawIds !== null) {
+          const allowed = this._normalizeServerIds(JSON.parse(rawIds));
+          if (!allowed.ok) return new Response('Invalid snapshot scope', { status: 403 });
+          snapshotServerIds = allowed.ids;
+        }
+      } catch (_) { return new Response('Invalid snapshot scope', { status: 403 }); }
+      if (snapshotServerIds !== null && scope !== 'all' && !snapshotServerIds.includes(scope)) return new Response('Forbidden', { status: 403 });
+
       // @ts-ignore - Cloudflare Workers 运行时提供 WebSocketPair
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -1577,8 +1590,9 @@ export class MetricsBroadcaster {
       // 使用 DO WebSocket Hibernation API 接管连接
       this.state.acceptWebSocket(server);
 
-      // 将订阅 scope 和空 serverIds 附加到 WebSocket（休眠后仍保留）
-      server.serializeAttachment({ scope, serverIds: [] });
+      const initialIds = snapshotServerIds === null ? []
+        : snapshotServerIds.filter(id => scope === 'all' || id === scope);
+      server.serializeAttachment({ scope, serverIds: initialIds, ...(snapshotServerIds === null ? {} : { snapshotServerIds }) });
 
       // 立即发送 hello 让客户端确认连接成功
       try {
@@ -1589,6 +1603,8 @@ export class MetricsBroadcaster {
         }));
       } catch (_) {
       }
+
+      if (snapshotServerIds !== null) await this._sendInitialSnapshot(server, initialIds);
 
       const responseHeaders = new Headers();
       if (origin && allowedOrigins.length > 0) {
@@ -1642,6 +1658,7 @@ export class MetricsBroadcaster {
         }], reportTs);
       }
       this._broadcast(serverId, payload);
+      await this._persistFrontendSnapshots([{ serverId, samples: [{ ts: reportTs, data: payload }] }], reportTs);
       return new Response(JSON.stringify({ ok: true, subscribers }), {
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1688,6 +1705,7 @@ export class MetricsBroadcaster {
       const reportTs = Date.now();
       if (latestReportOnly && subscribers === 0) {
         this._cacheLatestReportUpdates(normalizedUpdates, reportTs);
+        await this._persistFrontendSnapshots(normalizedUpdates, reportTs);
         return new Response(JSON.stringify({
           ok: true,
           count: normalizedUpdates.length,
@@ -1837,6 +1855,77 @@ export class MetricsBroadcaster {
       }
     }
     return updates;
+  }
+
+  async _loadFrontendSnapshots() {
+    if (!this.frontendSnapshotLoad) {
+      this.frontendSnapshotLoad = this.state.storage.get('frontend-latest-snapshot-v1').then(value => {
+        this.frontendSnapshots = new Map((value?.updates || []).map(update => [update.serverId, update]));
+      }).catch(error => {
+        this.frontendSnapshotLoad = null;
+        throw error;
+      });
+    }
+    await this.frontendSnapshotLoad;
+  }
+
+  async _persistFrontendSnapshots(updates, reportTs) {
+    const work = async () => {
+      await this._loadFrontendSnapshots();
+      const now = Date.now();
+      for (const [id, update] of this.frontendSnapshots) {
+        if (now - update.reportTs > LATEST_REPORT_CACHE_TTL_MS) this.frontendSnapshots.delete(id);
+      }
+      for (const update of updates) {
+        const samples = update.samples.slice().sort((a, b) => Number(a.ts) - Number(b.ts));
+        const sample = samples.at(-1);
+        if (!sample) continue;
+        const previous = this.frontendSnapshots.get(update.serverId);
+        if (previous && (Number(previous.samples[0]?.ts) > Number(sample.ts) ||
+          (Number(previous.samples[0]?.ts) === Number(sample.ts) && previous.reportTs >= reportTs))) continue;
+        const next = maskPublicIpUpdate({ serverId: update.serverId, reportTs, samples: [sample] });
+        if (new TextEncoder().encode(JSON.stringify({ updates: [next] })).length > 64 * 1024) continue;
+        this.frontendSnapshots.delete(update.serverId);
+        this.frontendSnapshots.set(update.serverId, next);
+      }
+      // Short-lived bootstrap cache, not a second metric-history store.
+      let value = { updates: [...this.frontendSnapshots.values()] };
+      while (this.frontendSnapshots.size > 0 &&
+        (this.frontendSnapshots.size > LATEST_REPORT_CACHE_MAX_SERVERS || new TextEncoder().encode(JSON.stringify(value)).length > 64 * 1024)) {
+        this.frontendSnapshots.delete(this.frontendSnapshots.keys().next().value);
+        value = { updates: [...this.frontendSnapshots.values()] };
+      }
+      await this.state.storage.put('frontend-latest-snapshot-v1', value);
+    };
+    const pending = (this.frontendSnapshotWrite || Promise.resolve()).catch(() => {}).then(work);
+    this.frontendSnapshotWrite = pending;
+    try { await pending; }
+    catch (error) { console.warn('[snapshot] cache write failed:', error?.message || error); }
+  }
+
+  async _sendInitialSnapshot(ws, serverIds) {
+    const byId = new Map(this._getLatestReportUpdates(serverIds).map(update => [update.serverId, update]));
+    try {
+      await this.frontendSnapshotWrite;
+      await this._loadFrontendSnapshots();
+      const now = Date.now();
+      for (const id of serverIds) {
+        const update = this.frontendSnapshots.get(id);
+        if (!update || now - update.reportTs > LATEST_REPORT_CACHE_TTL_MS) continue;
+        const current = byId.get(id);
+        if (!current || Number(update.samples[0]?.ts) > Math.max(...current.samples.map(sample => Number(sample.ts)))) {
+          byId.set(id, { ...update, reportAgeMs: Math.max(0, now - update.reportTs) });
+        }
+      }
+    } catch (error) { console.warn('[snapshot] cache read failed:', error?.message || error); }
+    const updates = [...byId.values()];
+    const present = new Set(updates.map(update => update.serverId));
+    try {
+      ws.send(JSON.stringify({
+        type: 'snapshot', ts: Date.now(), updates,
+        missingIds: serverIds.filter(id => !present.has(id))
+      }));
+    } catch (_) {}
   }
 
   _activateResourceAlertCache(now = Date.now()) {
@@ -2185,8 +2274,16 @@ export class MetricsBroadcaster {
           return;
         }
 
-        const serverIds = normalizedServerIds.ids;
-        ws.serializeAttachment({ scope, serverIds });
+        const allowed = current.snapshotServerIds;
+        if (Array.isArray(allowed) && scope !== 'all' && !allowed.includes(scope)) {
+          this._closeInvalidSubscription(ws);
+          return;
+        }
+        const requestedIds = normalizedServerIds.ids.length === 0 && Array.isArray(allowed)
+          ? allowed : normalizedServerIds.ids;
+        const serverIds = Array.isArray(allowed)
+          ? requestedIds.filter(id => allowed.includes(id)) : requestedIds;
+        ws.serializeAttachment({ scope, serverIds, ...(Array.isArray(allowed) ? { snapshotServerIds: allowed } : {}) });
         try {
           ws.send(JSON.stringify({
             type: 'subscribed',

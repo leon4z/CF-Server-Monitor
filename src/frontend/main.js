@@ -10,6 +10,7 @@ import { http, DEFAULT_REQUEST_TIMEOUT_MS } from './utils/http'
 import { initConfig, hasMultipleApiBases } from './utils/config'
 import { LAST_AGENT_VERSION, LAST_WORKERS_VERSION, VERSION, fetchRemoteVersion, normalizeLiveSocketTimeoutMinutes } from './utils/api'
 import { resolveDisplayMode } from './utils/displayMode'
+import { createStartupLiveSocket } from './utils/startupLive'
 import { getMikusAssetUrl, isMikusThemeEnabled, normalizeThemeOptions, setMikusThemeClass } from './utils/themeOptions'
 import { applyDefaultTheme } from './composables/useTheme'
 import {
@@ -303,15 +304,17 @@ async function initApp() {
   void preloadLanguage()
   const routePath = (currentHash.replace(/^#/, '') || '/').split('?')[0]
   let startupServers = null
+  let startupLive = null
   if (!isAdmin && routePath === '/') {
     void loadDashboard().catch(() => { /* The router handles a failed navigation import. */ })
     if (!isMultipleMode && localStorage.getItem(STORAGE.JWT_TOKEN)) {
       // The endpoint still enforces auth/Turnstile. Speculation must not clear
       // credentials or redirect while authoritative startup checks are running.
-      startupServers = http.get('/api/servers', {
+      startupServers = http.get('/api/servers?realtime=deferred', {
         autoRedirect: false, updateSession: false, includeTurnstileToken: false,
         timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
       }).catch(() => null)
+      startupLive = createStartupLiveSocket()
     }
   }
 
@@ -371,11 +374,11 @@ async function initApp() {
     if (isMultipleMode) {
       if (!config.verified && config.turnstile_site_key) {
         const verified = await renderStartupTurnstile(config.turnstile_site_key, config.turnstile_api_index || 0)
-        if (!verified) return
+        if (!verified) { startupLive?.close(); return }
       }
     } else if (config.turnstile_site_key && !config.verified) {
       const verified = await renderStartupTurnstile(config.turnstile_site_key, 0)
-      if (!verified) return
+        if (!verified) { startupLive?.close(); return }
     }
   }
 
@@ -387,9 +390,20 @@ async function initApp() {
     : config
 
   const app = createApp(App)
+  // An early connection has no configured lifetime yet. Recreate it normally
+  // when a site has a non-zero lifetime limit, or startup access was denied.
+  if ((!config.is_public && !config.authorization) || config.frontend_ws_timeout_minutes > 0) {
+    startupLive?.close()
+    startupLive = null
+  }
   const finishStartup = () => document.getElementById('loading')?.remove()
   app.provide('appConfig', config || {})
   app.provide('finishStartup', finishStartup)
+  app.provide('takeStartupLive', handlers => {
+    const early = startupLive
+    startupLive = null
+    return early?.take(handlers) || null
+  })
   app.provide('takeStartupServers', () => {
     const pending = startupServers
     startupServers = null
@@ -407,8 +421,8 @@ async function initApp() {
     // Dashboard removes the overlay only after its initial data has rendered.
     // Other routes can display their own loading/login state once routed.
     void router.isReady().then(() => {
-      if (router.currentRoute.value.name !== 'Dashboard') finishStartup()
-    }).catch(finishStartup)
+      if (router.currentRoute.value.name !== 'Dashboard') { startupLive?.close(); finishStartup() }
+    }).catch(() => { startupLive?.close(); finishStartup() })
   })
 }
 
