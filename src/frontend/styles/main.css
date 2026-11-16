@@ -3,9 +3,9 @@
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   1. Google Fonts Import
+   1. Self-hosted JetBrains Mono
    -------------------------------------------------------------------------- */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import '../assets/fonts/jetbrains-mono.css';
 
 /* --------------------------------------------------------------------------
    2. CSS Variables (Design Tokens)
