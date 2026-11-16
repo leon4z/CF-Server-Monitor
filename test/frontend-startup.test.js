@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { createServer } from 'vite'
+
+test('speculative startup reads preserve sessions and only reuse successful single-site results', async () => {
+  const vite = await createServer({ configFile: false, appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } })
+  const saved = { window: globalThis.window, localStorage: globalThis.localStorage, fetch: globalThis.fetch }
+  const store = new Map([['jwt_token', 'test-session'], ['turnstile_token', 'challenge'], ['turnstile_verified', 'verified']])
+  let redirects = 0
+  let calls = 0
+  let status = 200
+  let sentHeaders
+  const payload = { servers: [{ id: 'test-1', name: 'Synthetic server' }], latestReportUpdates: [], sysConfig: {}, stats: {}, regionStats: {} }
+  globalThis.window = { location: { origin: 'https://a.example', protocol: 'https:', host: 'a.example', assign() { redirects++ }, reload() { redirects++ } }, __APP_API_BASES__: ['https://a.example'] }
+  globalThis.localStorage = { getItem: key => store.get(key) || null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) }
+  globalThis.fetch = async (_url, options) => { calls++; sentHeaders = options.headers; return Response.json(status === 200 ? payload : { error: 'denied' }, { status }) }
+  try {
+    const { http } = await vite.ssrLoadModule('/src/frontend/utils/http.js')
+    const api = await vite.ssrLoadModule('/src/frontend/utils/api.js')
+    const before = [...store]
+    for (const denied of [401, 403]) {
+      status = denied
+      const result = await http.get('/api/servers', { autoRedirect: false, updateSession: false, includeTurnstileToken: false })
+      assert.equal(result.status, denied)
+      assert.equal(sentHeaders['X-Turnstile-Token'], undefined, 'speculation cannot consume a one-time challenge token')
+      assert.equal(sentHeaders['X-Turnstile-Verified'], 'verified', 'existing verified sessions still accelerate startup')
+      assert.deepEqual([...store], before, 'a speculative response must not race config or challenge state')
+      assert.equal(redirects, 0)
+    }
+    status = 200
+    calls = 0
+    const reused = await api.fetchServersAll({ status: 200, data: payload })
+    assert.equal(reused.servers[0].id, 'test-1')
+    assert.equal(calls, 0, 'successful startup data is consumed without a second request')
+    const timedOut = await api.fetchServersAll({ status: 0, timeout: true, error: 'timeout' })
+    assert.equal(timedOut.servers.length, 0)
+    assert.equal(calls, 0, 'a timeout cannot start another full startup wait')
+    await api.fetchServersAll({ status: 403, error: 'denied' })
+    assert.equal(calls, 1, 'failed speculation retries through the ordinary authenticated request')
+    await api.fetchServersAll({ status: 200, data: {} })
+    assert.equal(calls, 2, 'malformed startup data is not treated as an empty inventory')
+    globalThis.window.__APP_API_BASES__ = ['https://a.example', 'https://b.example']
+    await api.fetchServersAll({ status: 200, data: payload })
+    assert.equal(calls, 4, 'a single-site result cannot replace multi-site retrieval')
+    status = 401
+    await http.get('/api/servers', { autoRedirect: false })
+    assert.equal(store.has('jwt_token'), false, 'ordinary authorization failure keeps existing logout semantics')
+  } finally {
+    Object.assign(globalThis, saved)
+    await vite.close()
+  }
+})

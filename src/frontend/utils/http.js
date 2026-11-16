@@ -64,10 +64,10 @@ const createHeaders = (includeAuth = true, includeTurnstile = true, baseUrl = nu
 }
 
 const handleResponse = async (res, options = {}) => {
-  const { autoRedirect = true, baseUrl = null } = options
+  const { autoRedirect = true, baseUrl = null, updateSession = true } = options
   
   if (res.status === 401) {
-    localStorage.removeItem(STORAGE.JWT_TOKEN)
+    if (updateSession) localStorage.removeItem(STORAGE.JWT_TOKEN)
     if (autoRedirect) {
       redirectToAdminLogin()
     }
@@ -75,8 +75,10 @@ const handleResponse = async (res, options = {}) => {
   }
   
   if (res.status === 403) {
-    localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
-    localStorage.removeItem(TURNSTILE_VERIFIED_KEY)
+    if (updateSession) {
+      localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
+      localStorage.removeItem(TURNSTILE_VERIFIED_KEY)
+    }
     if (autoRedirect) {
       window.location.reload()
     }
@@ -109,7 +111,7 @@ const handleResponse = async (res, options = {}) => {
   
   try {
     const data = await res.json()
-    if (data && data.turnstile_verified) {
+    if (updateSession && data && data.turnstile_verified) {
       localStorage.setItem(TURNSTILE_VERIFIED_KEY, data.turnstile_verified)
       localStorage.removeItem(STORAGE.TURNSTILE_TOKEN)
     }
@@ -133,7 +135,7 @@ const doFetch = async (url, init, timeoutMs = null) => {
 }
 
 const request = async (method, url, body, options = {}) => {
-  const { includeAuth = true, includeTurnstile = true, autoRedirect = true, baseUrl = null, timeoutMs = null } = options
+  const { includeAuth = true, includeTurnstile = true, autoRedirect = true, baseUrl = null, timeoutMs = null, updateSession = true } = options
   const headers = createHeaders(includeAuth, includeTurnstile, baseUrl, options)
   const base = baseUrl || getApiBases()[0]
 
@@ -144,7 +146,7 @@ const request = async (method, url, body, options = {}) => {
       body: body != null ? JSON.stringify(body) : undefined,
       credentials: 'include'
     }, timeoutMs)
-    return { ...(await handleResponse(res, { autoRedirect, baseUrl: base })), baseUrl: base }
+    return { ...(await handleResponse(res, { autoRedirect, baseUrl: base, updateSession })), baseUrl: base }
   } catch (e) {
     if (e.name === 'AbortError') {
       return { error: 'timeout', status: 0, baseUrl: base, timeout: true }
@@ -154,7 +156,7 @@ const request = async (method, url, body, options = {}) => {
 }
 
 const fetchWithBase = async (baseUrl, url, options, method = 'GET', body = null) => {
-  const { includeAuth = true, includeTurnstile = true, autoRedirect = true, timeoutMs = null } = options
+  const { includeAuth = true, includeTurnstile = true, autoRedirect = true, timeoutMs = null, updateSession = true } = options
   const headers = createHeaders(includeAuth, includeTurnstile, baseUrl, options)
 
   try {
@@ -164,7 +166,7 @@ const fetchWithBase = async (baseUrl, url, options, method = 'GET', body = null)
       body,
       credentials: 'include'
     }, timeoutMs)
-    const result = await handleResponse(res, { autoRedirect, baseUrl })
+    const result = await handleResponse(res, { autoRedirect, baseUrl, updateSession })
     return { ...result, baseUrl }
   } catch (e) {
     if (e.name === 'AbortError') {

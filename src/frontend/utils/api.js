@@ -1,4 +1,4 @@
-import { http } from './http'
+import { http, DEFAULT_REQUEST_TIMEOUT_MS } from './http'
 import { getApiBases, getWsBase, hasMultipleApiBases, getTitle } from './config'
 import { DEFAULT_SITE_TITLE, FRONTEND_WS_TIMEOUT_MINUTES_MAX, LATENCY_WINDOW, STORAGE } from './constants'
 import { ref } from 'vue'
@@ -284,9 +284,13 @@ export const isServerOnline = (server, now = Date.now()) => {
   return lastUpdated && (now - lastUpdated) < TIME.ONLINE_THRESHOLD_MS
 }
 
-export const fetchServersAll = async () => {
-  const results = await http.getAll('/api/servers')
+export const fetchServersAll = async (initialResult = null) => {
   const multiSite = hasMultipleApiBases()
+  const reusable = !multiSite && (initialResult?.timeout === true ||
+    (initialResult?.status === 200 && !initialResult.error && Array.isArray(initialResult.data?.servers)))
+  // A timed-out prefetch has already spent the startup budget. Auth/challenge
+  // failures may retry after config settles, but never wait on an unbounded read.
+  const results = reusable ? [initialResult] : await http.getAll('/api/servers', { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
   const localTitle = getTitle() || DEFAULT_SITE_TITLE
 
   const mergedData = createEmptyMergedData()
@@ -377,7 +381,7 @@ export const fetchServersAllWithProgress = async (onResult) => {
     mergeSiteResult(mergedData, result, multiSite, localTitle)
     if (result.corsError && !corsErrorSites.includes(result.baseUrl)) corsErrorSites.push(result.baseUrl)
     onResult({ ...mergedData, corsErrorSites })
-  })
+  }, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS })
 
   return mergedData
 }

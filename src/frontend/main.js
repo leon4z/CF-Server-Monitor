@@ -302,8 +302,17 @@ async function initApp() {
   // Importing the page does not mount it or request private server data.
   void preloadLanguage()
   const routePath = (currentHash.replace(/^#/, '') || '/').split('?')[0]
+  let startupServers = null
   if (!isAdmin && routePath === '/') {
     void loadDashboard().catch(() => { /* The router handles a failed navigation import. */ })
+    if (!isMultipleMode && localStorage.getItem(STORAGE.JWT_TOKEN)) {
+      // The endpoint still enforces auth/Turnstile. Speculation must not clear
+      // credentials or redirect while authoritative startup checks are running.
+      startupServers = http.get('/api/servers', {
+        autoRedirect: false, updateSession: false, includeTurnstileToken: false,
+        timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS
+      }).catch(() => null)
+    }
   }
 
   // 多站模式公开页面：一次 getAll 获取所有站点配置，检查 Turnstile key 是否可共享。
@@ -378,7 +387,15 @@ async function initApp() {
     : config
 
   const app = createApp(App)
+  const finishStartup = () => document.getElementById('loading')?.remove()
   app.provide('appConfig', config || {})
+  app.provide('finishStartup', finishStartup)
+  app.provide('takeStartupServers', () => {
+    const pending = startupServers
+    startupServers = null
+    // Never consume speculative private data after a denied config response.
+    return config.is_public || config.authorization ? pending : null
+  })
   app.use(router)
   app.mount('#app').$nextTick(() => {
     if (versionSite?.authorization === true) {
@@ -387,12 +404,11 @@ async function initApp() {
     if (!isAdmin && !config.is_public && !config.authorization) {
       window.location.replace(ADMIN_ENTRY_URL)
     }
-    const loading = document.getElementById('loading')
-    if (loading) {
-      setTimeout(() => {
-        loading.remove()
-      }, 1000)
-    }
+    // Dashboard removes the overlay only after its initial data has rendered.
+    // Other routes can display their own loading/login state once routed.
+    void router.isReady().then(() => {
+      if (router.currentRoute.value.name !== 'Dashboard') finishStartup()
+    }).catch(finishStartup)
   })
 }
 

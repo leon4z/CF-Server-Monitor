@@ -23,9 +23,27 @@ Maintained branch: `personal`. `main` is an upstream baseline, currently
    This endpoint retains authentication, Turnstile and CORS enforcement and
    does not grant administrative access to the read-only App password.
 3. Preload the homepage code and likely locale alongside startup configuration.
-   Preloading does not mount a page, request server data, persist preferences,
+   Code preloading does not mount a page, request server data, persist preferences,
    or bypass authentication. The returned site settings and saved preferences
    still determine the actual language and theme before mounting.
+4. For an existing session on a single-site homepage, request the initial
+   server data alongside configuration. Both endpoints keep their existing
+   server-side authentication and Turnstile checks. Speculative responses never
+   redirect or change session/challenge state, and are used once only after
+   startup configuration permits viewing the page. Failed speculation retries
+   through the normal request. Speculation never sends a one-time challenge
+   token; it may reuse an existing verified credential so it cannot consume a
+   fresh token before the authoritative configuration check. Multi-site,
+   admin and logged-out startup retain
+   their ordinary request flow.
+5. Remove the fixed one-second startup-overlay delay. The homepage releases the
+   overlay after its initial data or error state has rendered; other routes
+   release it once the router is ready. Optional version checks remain detached.
+   Multi-site startup releases it on the first rendered progress result, without
+   waiting for a stalled peer. Dashboard list reads have a 15-second timeout;
+   an already timed-out speculative read does not start a second timeout.
+   History queries retain their original behavior. Failed initial lazy routing
+   also releases the startup overlay.
 
 The existing WebSocket unit test disables Vite's application config so it
 cannot install a developer certificate as a side effect of running tests.
@@ -51,13 +69,20 @@ cards appear; verify the later update notice; and verify that homepage/locale
 chunks begin loading before a delayed configuration response completes.
 No real monitoring credentials or host inventory are used in these checks.
 
+Startup checks also cover successful prefetch reuse, failed 401/403 speculation
+without session loss, denied configuration with an otherwise successful data
+response, slow data, logged-out access, request failures and expired sessions.
+Performance comparisons should measure usable cards with the overlay removed,
+not merely card elements underneath a full-screen loading overlay.
+
 ## Deployment and maintenance
 
-This branch is a tested candidate, **not a deployment**. No production
-configuration, credentials, binding IDs, domain, host inventory or database
+Source and deployment are maintained separately. No production configuration,
+credentials, binding IDs, domain, host inventory or database
 export is stored here. This fork's Actions are currently disabled in repository
 settings, so pushing this branch does not deploy Workers or Pages or sync main.
-No workflow or upstream PR has been triggered by preparing this branch.
+Manual production deployments are recorded privately and require explicit
+authorization; no upstream PR is triggered by maintaining this branch.
 
 Before a future deployment, review the upstream delta as well as these patches,
 use the existing deployment's bindings and secrets, and keep its data intact.

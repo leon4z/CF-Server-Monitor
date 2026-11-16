@@ -404,6 +404,8 @@ const servers = ref([])
 const stats = ref({ total: '-', online: 0, offline: 0, globalNetRx: 0, globalNetTx: 0, globalSpeedIn: 0, globalSpeedOut: 0 })
 const unknownStats = ref(0)
 const appConfig = inject('appConfig', null)
+const takeStartupServers = inject('takeStartupServers', () => null)
+const finishStartup = inject('finishStartup', () => {})
 const sysConfig = ref({
   show_price: true,
   show_expire: true,
@@ -1027,6 +1029,8 @@ const refreshData = async () => {
 
         if (data.corsErrorSites?.length && !hasCorsError.value) hasCorsError.value = [...data.corsErrorSites]
         if (isLoading.value) isLoading.value = false
+        // A slow/unreachable peer must not cover already rendered site results.
+        void nextTick(finishStartup)
         drawMarkers()
         sitesRemaining.value = Math.max(0, sitesRemaining.value - 1)
       })
@@ -1041,7 +1045,8 @@ const refreshData = async () => {
 
   // Single-site fallback
   try {
-    const data = await fetchServersAll()
+    const initialResult = await takeStartupServers()
+    const data = await fetchServersAll(initialResult)
     if (!data) return
 
     const rawServers = Array.isArray(data.servers)
@@ -1315,6 +1320,7 @@ const goToServer = (server) => {
 }
 
 onMounted(async () => {
+  if (appConfig?.is_public === false && appConfig?.authorization !== true) return
   financeCurrency.value = getStoredFinanceCurrency()
   loadFinanceRates()
 
@@ -1327,6 +1333,7 @@ onMounted(async () => {
   }
   await refreshData()
   await nextTick()
+  finishStartup()
   scheduleFilterMeasurement()
   if (window.ResizeObserver && filterWrap.value) {
     filterResizeObserver = new ResizeObserver(scheduleFilterMeasurement)
