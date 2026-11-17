@@ -100,6 +100,7 @@
         </div>
       </div>
     </div>
+    <ServerTrafficWarning v-if="sysConfig.show_tf" :server="server" />
     <div class="server-space"></div>
     <ServerLatencyPanel
       :show-three-net-details="sysConfig.show_three_net_details"
@@ -120,6 +121,7 @@
 <script setup>
 import OsIcon from './OsIcon.vue'
 import ServerLatencyPanel from './ServerLatencyPanel.vue'
+import ServerTrafficWarning from './ServerTrafficWarning.vue'
 import { DEFAULT_SERVER_CARD_CONFIG, useServerCardData } from '../composables/useServerCardData'
 
 const props = defineProps({

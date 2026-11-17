@@ -4,6 +4,8 @@ import { getPublicAssetUrl } from '../utils/config'
 import { currentLang, useTranslation } from '../utils/i18n'
 import { LATENCY_WINDOW, PING } from '../utils/constants'
 import { formatBillingPrice } from '../utils/server.js'
+import { getTrafficUsageBytes } from '../utils/traffic.js'
+export { getTrafficUsageBytes, calcTrafficUsagePercent } from '../utils/traffic.js'
 
 export const DEFAULT_SERVER_CARD_CONFIG = {
   show_price: true,
@@ -60,24 +62,6 @@ const formatCount = (value) => {
   const number = Number.parseInt(value, 10)
   if (!Number.isFinite(number) || number < 0) return '0'
   return number.toLocaleString('en-US')
-}
-
-export const getTrafficUsageBytes = (server) => {
-  const rx = parseFloat(server.net_rx_monthly) || 0
-  const tx = parseFloat(server.net_tx_monthly) || 0
-  const calcType = server.traffic_calc_type || 'total'
-  if (calcType === 'dl') return rx
-  if (calcType === 'ul') return tx
-  if (calcType === 'max') return Math.max(rx, tx)
-  return rx + tx
-}
-
-export const calcTrafficUsagePercent = (server) => {
-  const limit = parseFloat(server.traffic_limit) || 0
-  if (limit <= 0) return 0
-  const limitBytes = limit * 1024 * 1024 * 1024
-  const usedBytes = getTrafficUsageBytes(server)
-  return (usedBytes / limitBytes) * 100
 }
 
 const clampPercent = (value) => {

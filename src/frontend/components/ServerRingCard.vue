@@ -112,6 +112,7 @@
           <div v-else class="server-card-limit-fill" style="background-image: linear-gradient(to right, #00d4aa, #4da6ff, #ffb870, #f85149);">></div>
         </div>
       </div>
+      <ServerTrafficWarning v-if="sysConfig.show_tf" :server="server" />
       <ServerLatencyPanel
         variant="ring"
         :show-three-net-details="sysConfig.show_three_net_details"
@@ -133,6 +134,7 @@
 <script setup>
 import OsIcon from './OsIcon.vue'
 import ServerLatencyPanel from './ServerLatencyPanel.vue'
+import ServerTrafficWarning from './ServerTrafficWarning.vue'
 import { DEFAULT_SERVER_CARD_CONFIG, useServerCardData } from '../composables/useServerCardData'
 
 const props = defineProps({
